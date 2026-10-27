@@ -136,6 +136,10 @@ pub(crate) trait MapUnderTest<K: BenchKey, V: BenchValue>: Sized {
         self.get(key).map(BenchValue::fingerprint)
     }
 
+    /// Runs once the map is built, before the operations under test start:
+    /// for experiments that set up what lookups read.
+    fn finish_build(&mut self) {}
+
     /// Visits every entry, in key order for ordered maps, and returns their
     /// checksum.
     fn checksum_all(&self) -> u64 {
@@ -203,6 +207,11 @@ impl<K: BenchKey, V: BenchValue> MapUnderTest<K, V> for unsync::BBTreeMap<K, V> 
 
     fn get(&self, key: &K) -> Option<&V> {
         unsync::BBTreeMap::get(self, key)
+    }
+
+    #[cfg(feature = "entry-probe")]
+    fn finish_build(&mut self) {
+        self.refresh_len_hints();
     }
 
     fn checksum_all(&self) -> u64 {

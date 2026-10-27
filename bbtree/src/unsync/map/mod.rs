@@ -213,6 +213,15 @@ impl<K, V, S: InlineKeyStrategy<K>, A: Allocator + Clone> BBTreeMap<K, V, S, A> 
         self.tree.take().destroy(&self.alloc);
     }
 
+    /// Experiment (idea 2, not for release): records each leaf's length in
+    /// its parent's edge, from which lookups predict the entry to read.
+    /// Later changes leave the hints stale, which costs only accuracy.
+    #[doc(hidden)]
+    #[cfg(feature = "entry-probe")]
+    pub fn refresh_len_hints(&mut self) {
+        self.tree.refresh_len_hints();
+    }
+
     /// Returns a reference to the value corresponding to the key.
     ///
     /// The key may be any borrowed form of the map's key type, but the

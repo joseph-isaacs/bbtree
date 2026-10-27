@@ -293,6 +293,87 @@ impl<K, V, S: InlineKeyStrategy<K>> Internal<K, V, S> {
         Self::at(unsafe { self.edge_unchecked(index) })
     }
 
+    /// Sets every leaf below this node's length as the length hint of its
+    /// parent's edge to it (experiment: entry probe).
+    #[cfg(feature = "entry-probe")]
+    pub(in crate::tree) fn refresh_len_hints(self) {
+        assert!(
+            !NodePtr::<K, V, S>::is_in_file(),
+            "a file map's edges are offsets"
+        );
+        for index in 0..=self.len() {
+            match self.child(index) {
+                Node::Leaf(leaf) => {
+                    let hinted = leaf.node_ptr().with_len_hint(leaf.len());
+                    // SAFETY: `index <= len`, so edge `index` is an
+                    // initialized slot of this node, which the caller has
+                    // exclusive access to; the hinted pointer leads to the
+                    // same leaf.
+                    unsafe { self.edge_slots().slot(index).write(hinted) }
+                }
+                Node::Internal(child) => child.refresh_len_hints(),
+            }
+        }
+    }
+
+    /// The index of `key` in `leaf`, the child at edge `edge`, if the entry
+    /// its length hint predicts, or one of its neighbors, holds it
+    /// (experiment: entry probe). The prediction interpolates `key`'s window
+    /// between the windows of the separators around the edge, so it needs
+    /// no read of the leaf: its line loads beside the leaf's header.
+    /// `None` leaves the lookup to the leaf's search.
+    #[cfg(feature = "entry-probe")]
+    #[inline(always)]
+    pub(in crate::tree) fn probe_leaf_entry<Q>(
+        self,
+        edge: usize,
+        leaf: Leaf<K, V, S>,
+        key: &SearchKey<'_, K, S, Q>,
+    ) -> Option<usize>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        let predicted = self.predict_leaf_entry(edge, leaf, key)?;
+        leaf.find_near(predicted, key)
+    }
+
+    /// The index of `key` in `leaf`, the child at edge `edge`, as its length
+    /// hint and the windows of the separators around the edge predict it,
+    /// or `None` where they don't (experiment: entry probe).
+    #[cfg(feature = "entry-probe")]
+    #[inline(always)]
+    pub(in crate::tree) fn predict_leaf_entry<Q>(
+        self,
+        edge: usize,
+        leaf: Leaf<K, V, S>,
+        key: &SearchKey<'_, K, S, Q>,
+    ) -> Option<usize>
+    where
+        K: Borrow<Q>,
+        Q: ?Sized,
+    {
+        let len_hint = leaf.node_ptr().len_hint();
+        if len_hint == 0 || edge == 0 || edge >= self.len() {
+            return None;
+        }
+        let target = self.inline_target(key)?.inline_key();
+        let inline_keys = self.inline_keys()?;
+        // A separator's window lies somewhere in the step from its inline
+        // key: take the middle of each, which removes the truncation's bias.
+        // The two middles are a whole number of steps apart.
+        let half_step = inline_keys.step() / 2;
+        let low = inline_keys.inline_key(edge - 1).saturating_add(half_step);
+        let span = (inline_keys.inline_key(edge).saturating_add(half_step)).checked_sub(low)?;
+        if span == 0 {
+            return None;
+        }
+        let offset = target.saturating_sub(low).min(span - 1);
+        // In `f64`: a `u128` division is a library call, on the lookup's
+        // chain; the rounding moves the prediction by less than a key.
+        Some((offset as f64 / span as f64 * len_hint as f64) as usize)
+    }
+
     /// # Panics
     ///
     /// If `child` is not of the kind of this node's children. The caller

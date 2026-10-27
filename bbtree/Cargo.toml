@@ -24,6 +24,11 @@ file = []
 # Read-only views of a map's nodes (`BBTreeMap::inspect`), for the visualizer
 # in `vis/`. No stability promise.
 inspect = []
+# Experiment (idea 2, not for release): a leaf's pointer carries its length
+# in its spare low bits, and a lookup reads the entry it predicts from them
+# beside the leaf's inline keys. `unsync::BBTreeMap::refresh_len_hints` sets
+# the hints; changes after it leave them stale, which only costs accuracy.
+entry-probe = []
 
 [lints.rust]
 # Verus sets `verus_only` while it verifies: the proofs' modules, which only

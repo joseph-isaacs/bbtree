@@ -117,7 +117,13 @@ impl<K, V, S: InlineKeyStrategy<K>> Node<K, V, S> {
                     Ok(index) => return Some(Found::Separator(internal, index)),
                     // SAFETY: a search returns an edge `<= len`.
                     Err(edge) => match unsafe { internal.child_unchecked(edge) } {
-                        Node::Leaf(leaf) => break leaf,
+                        Node::Leaf(leaf) => {
+                            #[cfg(feature = "entry-probe")]
+                            if let Some(index) = internal.probe_leaf_entry(edge, leaf, key) {
+                                return Some(Found::InLeaf(leaf, index));
+                            }
+                            break leaf;
+                        }
                         Node::Internal(child) => internal = child,
                     },
                 }
@@ -156,6 +162,58 @@ impl<K, V, S: InlineKeyStrategy<K>> Node<K, V, S> {
         match leaf.search_always_inlined(key) {
             Ok(index) => Ok(Found::InLeaf(leaf, index)),
             Err(edge) => Err((leaf, edge)),
+        }
+    }
+}
+
+impl<K, V, S: InlineKeyStrategy<K>> Tree<K, V, S> {
+    /// Whether a lookup of `key` ends at its entry probe, finding it in the
+    /// line its leaf's length hint predicts (experiment: entry probe).
+    /// How far the entry probe's prediction for `key` is from where `key`
+    /// is, if the lookup reaches a probe that predicts (experiment: entry
+    /// probe).
+    #[cfg(all(test, feature = "entry-probe"))]
+    pub(crate) fn entry_probe_error(&self, key: &K) -> Option<isize>
+    where
+        K: Ord,
+    {
+        let key = SearchKey::<K, S, K>::new(key);
+        let Node::Internal(mut internal) = self.root_page()?.node() else {
+            return None;
+        };
+        loop {
+            let edge = internal.search(&key).err()?;
+            match internal.child(edge) {
+                Node::Leaf(leaf) => {
+                    let predicted = internal.predict_leaf_entry(edge, leaf, &key)?;
+                    let actual = leaf.keys().iter().position(|stored| stored == key.key())?;
+                    return Some(predicted as isize - actual as isize);
+                }
+                Node::Internal(child) => internal = child,
+            }
+        }
+    }
+
+    #[cfg(all(test, feature = "entry-probe"))]
+    pub(crate) fn entry_probe_finds(&self, key: &K) -> bool
+    where
+        K: Ord,
+    {
+        let Some(root_page) = self.root_page() else {
+            return false;
+        };
+        let key = SearchKey::<K, S, K>::new(key);
+        let Node::Internal(mut internal) = root_page.node() else {
+            return false;
+        };
+        loop {
+            let Err(edge) = internal.search(&key) else {
+                return false;
+            };
+            match internal.child(edge) {
+                Node::Leaf(leaf) => return internal.probe_leaf_entry(edge, leaf, &key).is_some(),
+                Node::Internal(child) => internal = child,
+            }
         }
     }
 }

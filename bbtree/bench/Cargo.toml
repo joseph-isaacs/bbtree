@@ -37,6 +37,11 @@ codegen-units = 1
 lto = "fat"
 debug = "line-tables-only"
 
+[features]
+# Experiment (idea 2): builds bbtree with its entry probe, and refreshes the
+# unsync map's length hints once it is built.
+entry-probe = ["bbtree/entry-probe"]
+
 # A workspace of its own: the benchmark dependencies stay out of the library's
 # dependency graph and lockfile.
 [workspace]

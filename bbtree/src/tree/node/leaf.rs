@@ -594,6 +594,33 @@ impl<K, V, S: InlineKeyStrategy<K>> Leaf<K, V, S> {
             .map_err(|index| candidates.start + index)
     }
 
+    /// The index of the key equal to `key` among keys `predicted - 2 ..=
+    /// predicted + 2` of this leaf, if one is (experiment: entry probe):
+    /// usually two cache lines, which load in parallel. It checks each index
+    /// against `len` before it reads the key, as the prediction may be
+    /// stale; the processor predicts those checks and loads the lines
+    /// beside the header, which is the point.
+    #[cfg(feature = "entry-probe")]
+    #[inline(always)]
+    pub(in crate::tree) fn find_near<Q>(
+        self,
+        predicted: usize,
+        key: &SearchKey<'_, K, S, Q>,
+    ) -> Option<usize>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        const REACH: usize = 2;
+        let len = self.len();
+        let candidates = predicted.saturating_sub(REACH)..(predicted + REACH + 1).min(len);
+        candidates.into_iter().find(|&index| {
+            // SAFETY: `index < len`, as the range ends there.
+            let stored = unsafe { self.key_unchecked(index) };
+            key.key().cmp(stored.borrow()) == Ordering::Equal
+        })
+    }
+
     /// The index of the key equal to `key`, if the leaf holds one. As an
     /// exact-key lookup, it may reject candidates of other lengths (D36), and
     /// confirm a lone candidate by equality alone (D38). Ordered searches use

@@ -389,15 +389,59 @@ impl<K, V, S> NodePtr<K, V, S> {
         self.tagged.addr().get() & Self::LEAF_TAG != 0
     }
 
+    /// The bits of a leaf's pointer that hold its length hint (experiment:
+    /// entry probe): bits 1 to 9, zero in every leaf page, as leaves are
+    /// aligned to at least 1 KiB (`layout.rs`). Internal nodes' pointers
+    /// never carry one.
+    #[cfg(feature = "entry-probe")]
+    const LEN_HINT_MASK: usize = 0x3fe;
+
+    /// The low bits [`Self::page`] clears: the tag, and a leaf's length hint.
+    #[inline(always)]
+    fn low_bits(addr: usize) -> usize {
+        #[cfg(feature = "entry-probe")]
+        {
+            Self::LEAF_TAG | ((addr & Self::LEAF_TAG) * Self::LEN_HINT_MASK)
+        }
+        #[cfg(not(feature = "entry-probe"))]
+        {
+            let _ = addr;
+            Self::LEAF_TAG
+        }
+    }
+
     /// The page's address: the pointer without its tag, which every access
     /// to the node starts from.
     #[inline(always)]
     pub(in crate::tree) fn page(self) -> NonNull<u8> {
-        // SAFETY: clearing the tag gives back the page's address, which is
-        // not null.
+        // SAFETY: clearing the low bits gives back the page's address, which
+        // is not null.
         unsafe {
-            NonNull::new_unchecked(self.tagged.as_ptr().map_addr(|addr| addr & !Self::LEAF_TAG))
+            NonNull::new_unchecked(
+                (self.tagged.as_ptr()).map_addr(|addr| addr & !Self::low_bits(addr)),
+            )
         }
+    }
+
+    /// This leaf's pointer, carrying `len` as its length hint, saturated at
+    /// what the hint bits hold (experiment: entry probe).
+    #[cfg(feature = "entry-probe")]
+    pub(in crate::tree) fn with_len_hint(self, len: usize) -> Self {
+        assert!(self.is_leaf(), "only leaves' pointers carry a length hint");
+        let hint = len.min(Self::LEN_HINT_MASK >> 1) << 1;
+        let tagged = (self.tagged.as_ptr()).map_addr(|addr| (addr & !Self::LEN_HINT_MASK) | hint);
+        Self {
+            tagged: NonNull::new(tagged).expect("a page's address is not null"),
+            ..self
+        }
+    }
+
+    /// The length hint this pointer carries: 0 for none, as every pointer
+    /// starts with (experiment: entry probe). A hint may be stale.
+    #[cfg(feature = "entry-probe")]
+    #[inline(always)]
+    pub(in crate::tree) fn len_hint(self) -> usize {
+        (self.tagged.addr().get() & Self::LEN_HINT_MASK) >> 1
     }
 
     /// The page's address, which tells nodes apart (`tree/inspect.rs`).
@@ -408,7 +452,7 @@ impl<K, V, S> NodePtr<K, V, S> {
 
     /// Whether `self` and `other` point to the same node.
     pub(in crate::tree) fn is(self, other: Self) -> bool {
-        self.tagged == other.tagged
+        self.page() == other.page()
     }
 
     /// Gives the page back, as a fresh page of its type.

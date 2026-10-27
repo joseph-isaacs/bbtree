@@ -79,6 +79,18 @@ impl<'a> NodeInlineKeys<'a> {
         with_inline_keys_of_width!(self, |of_width| of_width.load(index).inline_key())
     }
 
+    /// The step between consecutive inline keys the node can keep: what
+    /// a window's dropped bytes may add to its inline key, plus one
+    /// (experiment: entry probe).
+    #[cfg(feature = "entry-probe")]
+    pub(in crate::tree) fn step(self) -> InlineWord {
+        match self {
+            Self::Two(_) => 1 << 48,
+            Self::Four(_) => 1 << 32,
+            Self::Eight(_) => 1,
+        }
+    }
+
     /// Whether inline key `index` is above the bytes the node keeps of
     /// `inline_key`: a key with that inline key sorts before key `index`,
     /// whatever its bytes past those say.

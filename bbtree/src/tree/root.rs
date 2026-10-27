@@ -96,6 +96,17 @@ impl<K, V, S: InlineKeyStrategy<K>> Tree<K, V, S> {
         self.root_page
     }
 
+    /// Sets every leaf's length as the hint its parent's edge carries
+    /// (experiment: entry probe).
+    #[cfg(feature = "entry-probe")]
+    pub(crate) fn refresh_len_hints(&mut self) {
+        if let Some(root_page) = self.root_page_mut()
+            && let Node::Internal(root) = root_page.node()
+        {
+            root.refresh_len_hints();
+        }
+    }
+
     /// Whether there is a tree, with or without entries.
     pub(crate) fn has_root(&self) -> bool {
         self.root_page.is_some()

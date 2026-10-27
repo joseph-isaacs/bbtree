@@ -12,6 +12,8 @@ mod allocator;
 mod batch;
 mod differential;
 mod drops;
+#[cfg(feature = "entry-probe")]
+mod entry_probe;
 mod hash_tag;
 mod inline_key;
 mod insert;

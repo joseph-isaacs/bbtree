@@ -112,7 +112,9 @@ impl<K: BenchKey, V: BenchValue> SingleMapCell<K, V> {
     /// The map that operations other than builds start from: every key
     /// inserted in random order, as most maps are built.
     fn built_map<M: MapUnderTest<K, V>>(&self) -> M {
-        Self::insert_all(self.entries_in_insertion_order())
+        let mut map: M = Self::insert_all(self.entries_in_insertion_order());
+        map.finish_build();
+        map
     }
 
     fn build_map<M: MapUnderTest<K, V>>(operation: Operation, input: Vec<(K, V)>) -> M {
