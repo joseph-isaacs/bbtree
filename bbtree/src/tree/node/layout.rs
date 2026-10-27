@@ -7,7 +7,7 @@ use core::alloc::Layout;
 use core::marker::PhantomData;
 use core::mem::{align_of, size_of};
 
-use super::page::{InlineKeyNodeHeader, LatchedNodeHeader, NodeHeader, NodePtr};
+use super::page::{EdgeSlot, InlineKeyNodeHeader, LatchedNodeHeader, NodeHeader};
 use crate::inline_key::{Auto, InlineWidth, InlineWord};
 use crate::node_config::NodeConfig;
 
@@ -252,8 +252,8 @@ impl<K, V, C: NodeConfig, L> NodeLayout<K, V, C, L> {
     /// An internal node's trailing slot: an edge, a pointer to a child node,
     /// the same for every strategy, which is only a marker in it.
     const EDGE: TrailingSlot = TrailingSlot {
-        size: size_of::<NodePtr<K, V, Auto>>(),
-        align: align_of::<NodePtr<K, V, Auto>>(),
+        size: size_of::<EdgeSlot<K, V, Auto>>(),
+        align: align_of::<EdgeSlot<K, V, Auto>>(),
         pair_with_key: false,
     };
 

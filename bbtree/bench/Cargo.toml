@@ -37,6 +37,10 @@ codegen-units = 1
 lto = "fat"
 debug = "line-tables-only"
 
+[features]
+# Experiment (idea 3): builds bbtree with 4-byte edges.
+compact-edges = ["bbtree/compact-edges"]
+
 # A workspace of its own: the benchmark dependencies stay out of the library's
 # dependency graph and lockfile.
 [workspace]

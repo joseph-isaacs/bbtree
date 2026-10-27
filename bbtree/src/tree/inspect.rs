@@ -25,7 +25,7 @@ use super::node::inline_key_search::NodeInlineKeys;
 use super::node::inline_keys::{SearchKey, Window};
 use super::node::internal::Internal;
 use super::node::leaf::Leaf;
-use super::node::page::{InlineKeyNodeHeader, NodeHeader, NodeKind, NodePtr, PageType};
+use super::node::page::{EdgeSlot, InlineKeyNodeHeader, NodeHeader, NodeKind, NodePtr, PageType};
 use super::node::root_page::RootPage;
 use super::node::{Child, Node};
 use super::root::Tree;
@@ -707,7 +707,7 @@ impl PageMap {
             contents: SlotContents::Edges,
             offset: layout.edges_offset,
             stride: layout.edge_stride,
-            slot_size: size_of::<NodePtr<K, V, S>>(),
+            slot_size: size_of::<EdgeSlot<K, V, S>>(),
             capacity: capacity + 1,
             used: len + 1,
         });

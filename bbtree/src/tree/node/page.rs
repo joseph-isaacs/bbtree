@@ -314,6 +314,164 @@ impl LatchedNodeHeader {
     }
 }
 
+#[cfg(all(feature = "compact-edges", feature = "file"))]
+compile_error!("compact edges (an experiment) don't support file maps");
+
+/// What an internal node stores for each edge: the child's tagged pointer.
+#[cfg(not(feature = "compact-edges"))]
+pub(in crate::tree) type EdgeSlot<K, V, S> = NodePtr<K, V, S>;
+
+/// What an internal node stores for each edge (experiment: compact edges):
+/// the child's page number, in 64-byte units, within the 128 GiB-aligned
+/// window of addresses its parent's page is in, shifted up past the
+/// child's leaf tag. Never 0, which a latched tree's zeroed slot holds: no
+/// page starts a window. Moves between nodes keep it, as every page of a
+/// tree is in one window, which writing an edge checks.
+#[cfg(feature = "compact-edges")]
+#[repr(transparent)]
+pub(in crate::tree) struct EdgeSlot<K, V, S> {
+    page_number_and_tag: u32,
+    _node: PhantomData<NodePtr<K, V, S>>,
+}
+
+#[cfg(feature = "compact-edges")]
+impl<K, V, S> Clone for EdgeSlot<K, V, S> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+#[cfg(feature = "compact-edges")]
+impl<K, V, S> Copy for EdgeSlot<K, V, S> {}
+
+#[cfg(feature = "compact-edges")]
+impl<K, V, S> EdgeSlot<K, V, S> {
+    /// The window's size, as a power of two: 128 GiB, so that a page
+    /// number and the tag fill 32 bits.
+    const WINDOW_BITS: u32 = 37;
+
+    /// The page numbers' unit, as a power of two: 64 bytes, the smallest
+    /// alignment of a page in any config (D59).
+    const PAGE_BITS: u32 = 6;
+
+    /// The address bits within a window.
+    const IN_WINDOW: usize = (1 << Self::WINDOW_BITS) - 1;
+
+    /// The edge to `child` from the internal node in page `parent`.
+    ///
+    /// # Panics
+    ///
+    /// If `child` is outside `parent`'s window, starts it, or is less than
+    /// 64-byte aligned.
+    #[inline(always)]
+    fn of(child: NodePtr<K, V, S>, parent: NonNull<u8>) -> Self {
+        let child_addr = child.page().addr().get();
+        assert_eq!(
+            child_addr & !Self::IN_WINDOW,
+            parent.addr().get() & !Self::IN_WINDOW,
+            "a tree's pages lie in one 128 GiB-aligned window (compact edges)"
+        );
+        assert_eq!(
+            child_addr % (1 << Self::PAGE_BITS),
+            0,
+            "a page is 64-byte aligned"
+        );
+        let page_number = (child_addr & Self::IN_WINDOW) >> Self::PAGE_BITS;
+        assert_ne!(page_number, 0, "no page starts a window (compact edges)");
+        let tag = usize::from(child.is_leaf());
+        Self {
+            page_number_and_tag: u32::try_from((page_number << 1) | tag)
+                .expect("a window holds 2^31 pages"),
+            _node: PhantomData,
+        }
+    }
+
+    /// The child this edge leads to, from the internal node in page
+    /// `parent`, or `None` for a zeroed slot.
+    #[inline(always)]
+    fn child(self, parent: NonNull<u8>) -> Option<NodePtr<K, V, S>> {
+        if self.page_number_and_tag == 0 {
+            return None;
+        }
+        let page_number = (self.page_number_and_tag >> 1) as usize;
+        let tag = (self.page_number_and_tag & 1) as usize;
+        let window = parent.addr().get() & !Self::IN_WINDOW;
+        let tagged = (parent.as_ptr()).with_addr(window | (page_number << Self::PAGE_BITS) | tag);
+        // SAFETY: a nonzero edge was made by `Self::of` from a node's tagged
+        // pointer, in this window (its invariant).
+        Some(unsafe { NodePtr::from_tagged(NonNull::new_unchecked(tagged)) })
+    }
+}
+
+impl<K, V, S> NodePtr<K, V, S> {
+    /// The edge to this node from the internal node in page `parent`.
+    #[inline(always)]
+    pub(in crate::tree) fn as_edge_from(self, parent: NonNull<u8>) -> EdgeSlot<K, V, S> {
+        #[cfg(feature = "compact-edges")]
+        {
+            EdgeSlot::of(self, parent)
+        }
+        #[cfg(not(feature = "compact-edges"))]
+        {
+            let _ = parent;
+            self
+        }
+    }
+
+    /// The node `edge`, stored in the internal node in page `parent`, leads
+    /// to.
+    ///
+    /// # Safety
+    ///
+    /// `edge` is an initialized edge of that node.
+    #[inline(always)]
+    pub(in crate::tree) unsafe fn of_edge(edge: EdgeSlot<K, V, S>, parent: NonNull<u8>) -> Self {
+        #[cfg(feature = "compact-edges")]
+        {
+            // SAFETY: an initialized edge is nonzero (caller).
+            unsafe { edge.child(parent).unwrap_unchecked() }
+        }
+        #[cfg(not(feature = "compact-edges"))]
+        {
+            let _ = parent;
+            edge
+        }
+    }
+
+    /// The node the edge in `slot` of the internal node in page `parent`
+    /// leads to, read as raw bits while writers may change it, or `None`
+    /// for a zeroed slot (`optimistic.rs`).
+    ///
+    /// # Safety
+    ///
+    /// `slot` is an edge slot of that node, allocated; a nonzero edge in it
+    /// leads to a node of this map.
+    #[inline(always)]
+    pub(in crate::tree) unsafe fn of_racing_edge(
+        slot: NonNull<EdgeSlot<K, V, S>>,
+        parent: NonNull<u8>,
+    ) -> Option<Self> {
+        #[cfg(feature = "compact-edges")]
+        {
+            // SAFETY: forwarded; the slot is a `u32`'s size and alignment.
+            let bits = unsafe { slot.cast::<u32>().read() };
+            EdgeSlot {
+                page_number_and_tag: bits,
+                _node: PhantomData,
+            }
+            .child(parent)
+        }
+        #[cfg(not(feature = "compact-edges"))]
+        {
+            let _ = parent;
+            // SAFETY: forwarded; the slot is a pointer's size and alignment.
+            let tagged = unsafe { slot.cast::<*mut u8>().read() };
+            // SAFETY: a non-null edge is a node's tagged pointer (caller).
+            NonNull::new(tagged).map(|tagged| unsafe { Self::from_tagged(tagged) })
+        }
+    }
+}
+
 /// A pointer to an initialized node of `NodeLayout<K, V, S::Config>`, for a
 /// map with strategy `S`, whose lowest bit tells the node's kind. Every page
 /// leaves that bit 0, being aligned to at least 64 B (D15, D49, D59). A leaf's pointer
@@ -975,7 +1133,7 @@ impl<K, V, S: InlineKeyStrategy<K>> NodePtr<K, V, S> {
     /// # Safety
     ///
     /// The node is an internal node that has not been freed.
-    pub(super) unsafe fn edge_slots(self) -> Slots<NodePtr<K, V, S>> {
+    pub(super) unsafe fn edge_slots(self) -> Slots<EdgeSlot<K, V, S>> {
         let layout = Self::internal_layout();
         // SAFETY: the page is an internal node's (caller), of this layout.
         // The edges' offset and stride are aligned for an edge, a `NodePtr`

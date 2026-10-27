@@ -31,7 +31,6 @@ use core::borrow::Borrow;
 use core::cmp::Ordering;
 use core::mem::{ManuallyDrop, MaybeUninit};
 use core::ops::Range;
-use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
 
 use super::Node;
@@ -465,9 +464,8 @@ impl<K, V, S: InlineKeyStrategy<K>> Internal<K, V, S> {
         // pointer, as a zeroed one is no `NodePtr`. A non-null edge is a
         // tagged pointer to a node of this map.
         unsafe {
-            let slot = self.node_ptr().edge_slots().slot(index);
-            let tagged = slot.cast::<*mut u8>().read();
-            NonNull::new(tagged).map(|tagged| Node::at(NodePtr::from_tagged(tagged)))
+            let node = self.node_ptr();
+            NodePtr::of_racing_edge(node.edge_slots().slot(index), node.page()).map(Node::at)
         }
     }
 }

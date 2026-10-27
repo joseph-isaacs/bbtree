@@ -24,6 +24,10 @@ file = []
 # Read-only views of a map's nodes (`BBTreeMap::inspect`), for the visualizer
 # in `vis/`. No stability promise.
 inspect = []
+# Experiment (idea 3, not for release): internal nodes store each edge in
+# 4 bytes, the child's 64-byte page number within a 128 GiB-aligned window
+# of addresses that every page of a tree must share, and its leaf tag.
+compact-edges = []
 
 [lints.rust]
 # Verus sets `verus_only` while it verifies: the proofs' modules, which only

@@ -22,7 +22,7 @@ use super::inline_key_search::NodeInlineKeys;
 use super::inline_keys::{SearchKey, Separator, Window, WindowedKey};
 use super::leaf::Leaf;
 use super::node_plan::NodePlan;
-use super::page::{FreshPage, NodeKind, NodePtr, PageAllocator, PageByType, PageType};
+use super::page::{EdgeSlot, FreshPage, NodeKind, NodePtr, PageAllocator, PageByType, PageType};
 use super::siblings::Siblings;
 use super::slots::{KeyColumns, KeyList, KeySlots, NodeKeys, SeparatorSlots, Slots};
 use super::{Child, EntrySlots, Insertion, InsertionSide, Node, Split};
@@ -110,7 +110,9 @@ impl<K, V, S: InlineKeyStrategy<K>> Internal<K, V, S> {
         // SAFETY: the node is an allocated internal node, whose edge 0 holds
         // nothing to drop or free (the caller); with no separators, that is its
         // only edge, and it has no inline keys either.
-        unsafe { self.edge_slots().slot(0).write(child.node_ptr()) };
+        unsafe {
+            (self.edge_slots().slot(0)).write(child.node_ptr().as_edge_from(self.node.page()))
+        };
     }
 
     /// Gives the node's page back.
@@ -198,7 +200,7 @@ impl<K, V, S: InlineKeyStrategy<K>> Internal<K, V, S> {
     }
 
     #[inline(always)]
-    fn edge_slots(self) -> Slots<NodePtr<K, V, S>> {
+    fn edge_slots(self) -> Slots<EdgeSlot<K, V, S>> {
         // SAFETY: the node is an allocated internal node (invariant 1).
         unsafe { self.node.edge_slots() }
     }
@@ -236,7 +238,7 @@ impl<K, V, S: InlineKeyStrategy<K>> Internal<K, V, S> {
         } else {
             // SAFETY: `index <= len` (caller), so edge `index` is initialized
             // (invariant 1).
-            unsafe { self.edge_slots().slot(index).read() }
+            unsafe { NodePtr::of_edge(self.edge_slots().slot(index).read(), self.node.page()) }
         }
     }
 
@@ -762,8 +764,11 @@ impl<K, V, S: InlineKeyStrategy<K>> Internal<K, V, S> {
         // from now on (invariant 2).
         unsafe {
             self.separator_slots().insert(index, len, separator);
-            self.edge_slots()
-                .insert(index + 1, len + 1, right_child.node_ptr());
+            self.edge_slots().insert(
+                index + 1,
+                len + 1,
+                right_child.node_ptr().as_edge_from(self.node.page()),
+            );
             // The slots past it already hold the greatest inline key.
             self.node.set_len(len + 1);
         }
@@ -898,7 +903,10 @@ impl<K, V, S: InlineKeyStrategy<K>> Internal<K, V, S> {
             let separator = self.separator_slots().remove(index, len);
             let child = self.edge_slots().remove(index + 1, len + 1);
             self.set_len(len - 1);
-            (separator, Node::at(child))
+            (
+                separator,
+                Node::at(NodePtr::of_edge(child, self.node.page())),
+            )
         }
     }
 
