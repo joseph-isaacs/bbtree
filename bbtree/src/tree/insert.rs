@@ -122,10 +122,63 @@ impl<K, V, S: InlineKeyStrategy<K>> Tree<K, V, S> {
             drop(key);
             Some(mem::replace(stack.value_mut(), value))
         } else {
+            #[cfg(feature = "fuller-leaves")]
+            if stack.spill_full_leaf() {
+                // Both leaves have room now: the key fits whichever it
+                // belongs in, found by a fresh search.
+                return self.insert_with_stack(key, value, alloc, length);
+            }
             stack.insert_prefixed(key, value, alloc, length);
             stack.finish_insertion();
             None
         }
+    }
+}
+
+#[cfg(feature = "fuller-leaves")]
+impl<K, V, S: InlineKeyStrategy<K>> NodeStackMut<'_, K, V, S> {
+    /// Moves entries from the leaf the node stack ends at, if full, into its
+    /// sibling with more room, through their parent's separator, until the
+    /// two hold about as many, and fits both prefixes to their new fences
+    /// (experiment: fuller leaves). Returns whether it moved any, and then
+    /// leaves the node stack at the parent: a fresh search finds where the
+    /// key goes. Moves none at the root, nor when the sibling has too little
+    /// room to be worth the move, and leaves the node stack as it was, for
+    /// the leaf to split.
+    fn spill_full_leaf(&mut self) -> bool {
+        let capacity = Leaf::<K, V, S>::capacity();
+        let leaf_len = self.leaf().len();
+        if leaf_len < capacity || self.is_at_root() {
+            return false;
+        }
+        let leaf_edge = self.index();
+        let parent = self.ascend();
+        let edge = self.index();
+        let sibling_len = |edge: usize| parent.leaf_child(edge).len();
+        let left = edge.checked_sub(1).map(|left| (left, sibling_len(left)));
+        let right = (edge < parent.len()).then(|| (edge + 1, sibling_len(edge + 1)));
+        let roomier = [left, right]
+            .into_iter()
+            .flatten()
+            .min_by_key(|&(_, len)| len);
+        let moves = roomier.map_or(0, |(_, sibling_len)| (leaf_len - sibling_len) / 2);
+        let Some((sibling, _)) = roomier.filter(|_| moves >= (capacity / 16).max(2)) else {
+            self.descend();
+            self.set_index(leaf_edge);
+            return false;
+        };
+        let separator = edge.min(sibling);
+        let mut siblings = parent.siblings::<Leaf<K, V, S>>(separator);
+        for _ in 0..moves {
+            let moved = if sibling > edge {
+                siblings.steal_left()
+            } else {
+                siblings.steal_right()
+            };
+            moved.expect("the sibling has room, and the full leaf entries");
+        }
+        self.refit_children_to_fences([separator, separator + 1]);
+        true
     }
 }
 

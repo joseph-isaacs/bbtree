@@ -12,6 +12,7 @@ mod allocator;
 mod batch;
 mod differential;
 mod drops;
+mod fill;
 mod hash_tag;
 mod inline_key;
 mod insert;

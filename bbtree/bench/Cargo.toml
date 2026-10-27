@@ -37,6 +37,10 @@ codegen-units = 1
 lto = "fat"
 debug = "line-tables-only"
 
+[features]
+# Experiment (idea 5): builds bbtree with fuller leaves.
+fuller-leaves = ["bbtree/fuller-leaves"]
+
 # A workspace of its own: the benchmark dependencies stay out of the library's
 # dependency graph and lockfile.
 [workspace]

@@ -24,6 +24,10 @@ file = []
 # Read-only views of a map's nodes (`BBTreeMap::inspect`), for the visualizer
 # in `vis/`. No stability promise.
 inspect = []
+# Experiment (idea 5, not for release): an insert into a full leaf first
+# moves entries into a sibling with room, and splits only when neither has
+# enough, so leaves run fuller.
+fuller-leaves = []
 
 [lints.rust]
 # Verus sets `verus_only` while it verifies: the proofs' modules, which only

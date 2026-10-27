@@ -437,6 +437,10 @@ fn steals_refuse_an_empty_donor_or_a_full_receiver() {
 
 #[test]
 #[cfg_attr(not(target_pointer_width = "64"), ignore = "assumes 64-bit pointers")]
+#[cfg_attr(
+    feature = "fuller-leaves",
+    ignore = "assumes the shape that splits alone build"
+)]
 fn steals_and_merges_of_internal_nodes() {
     type BulkyInternal<'l> = Internal<Bulky<'l>, Tracked<'l>, Auto>;
     let ledger = DropLedger::new();

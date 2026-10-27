@@ -146,6 +146,24 @@ impl<K, V, S: InlineKeyStrategy<K>> Tree<K, V, S> {
 impl<K, V, S: InlineKeyStrategy<K>> Tree<K, V, S> {
     /// Every node's prefix length, from the root down, each node before its
     /// children.
+    /// The leaves' lengths, in key order.
+    pub(crate) fn leaf_lens(&self) -> Vec<usize> {
+        let mut leaf_lens = Vec::new();
+        Self::collect_leaf_lens(self.root(), &mut leaf_lens);
+        leaf_lens
+    }
+
+    fn collect_leaf_lens(node: Node<K, V, S>, leaf_lens: &mut Vec<usize>) {
+        match node {
+            Node::Leaf(leaf) => leaf_lens.push(leaf.len()),
+            Node::Internal(internal) => {
+                for index in 0..=internal.len() {
+                    Self::collect_leaf_lens(internal.child(index), leaf_lens);
+                }
+            }
+        }
+    }
+
     pub(crate) fn node_prefix_lens(&self) -> Vec<usize> {
         let mut prefix_lens = Vec::new();
         Self::collect_prefix_lens(self.root(), &mut prefix_lens);
