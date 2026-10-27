@@ -640,7 +640,10 @@ impl<K, V, S: InlineKeyStrategy<K>> Internal<K, V, S> {
     /// the node's prefix: it lies between the node's fences, or within what
     /// every key of the tree shares, which a search checks at the top (D50).
     #[inline(always)]
-    fn search_always_inlined<Q>(self, key: &SearchKey<'_, K, S, Q>) -> Result<usize, usize>
+    pub(in crate::tree) fn search_always_inlined<Q>(
+        self,
+        key: &SearchKey<'_, K, S, Q>,
+    ) -> Result<usize, usize>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,

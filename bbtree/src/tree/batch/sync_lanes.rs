@@ -86,7 +86,10 @@ where
     {
         let lane = &mut self.lane;
         match self.stage {
-            Stage::Internal => match Internal::at(lane.node).search(&lane.key) {
+            // Inlined for every plan: a lane's step is all the batch's
+            // hot code, and LLVM outlines a heap string's search here,
+            // where the async lane's poll inlines it.
+            Stage::Internal => match Internal::at(lane.node).search_always_inlined(&lane.key) {
                 Ok(index) => {
                     let separator = Found::Separator(Internal::at(lane.node), index);
                     *output = Some(separator.key_value().1);
