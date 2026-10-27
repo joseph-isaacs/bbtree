@@ -148,14 +148,27 @@ impl<K> NodePlan<K> {
         has_cmp_from: bool,
     ) -> Self {
         let narrower_inside = has_cmp_from && width == InlineWidth::Eight && !Kind::IS_LEAF;
+        // Experiment (one-byte leaf keys): leaves keep 1 byte of 2-byte
+        // inline keys, and read a window from its key when they hand it up.
+        let narrower_leaf =
+            cfg!(feature = "one-byte-leaf-keys") && width == InlineWidth::Two && Kind::IS_LEAF;
         Self {
             inliner: Some(inliner),
             inline_width: Some(if narrower_inside {
                 InlineWidth::Four
+            } else if narrower_leaf {
+                #[cfg(feature = "one-byte-leaf-keys")]
+                {
+                    InlineWidth::One
+                }
+                #[cfg(not(feature = "one-byte-leaf-keys"))]
+                {
+                    unreachable!("leaves keep their impl's width")
+                }
             } else {
                 width
             }),
-            rehydrates_windows: narrower_inside,
+            rehydrates_windows: narrower_inside || narrower_leaf,
             hash_tags: has_hash_tag && Kind::has_room_for_hash_tags(width),
             ..Self::without_inline_keys()
         }
@@ -429,6 +442,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        feature = "one-byte-leaf-keys",
+        ignore = "asserts the leaves' width, which the experiment changes"
+    )]
     fn inline_key_impls_keep_their_width_in_both_kinds() {
         let two_bytes = PlanRow {
             inline_width: Some(InlineWidth::Two),

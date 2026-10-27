@@ -25,6 +25,8 @@ use crate::inline_key::InlineWord;
 /// which costs a call and a match on every level of every insert.
 #[derive(Clone, Copy)]
 pub(in crate::tree) enum NodeInlineKeys<'a> {
+    #[cfg(feature = "one-byte-leaf-keys")]
+    One(InlineKeysOfWidth<'a, u8>),
     Two(InlineKeysOfWidth<'a, u16>),
     Four(InlineKeysOfWidth<'a, u32>),
     Eight(InlineKeysOfWidth<'a, u64>),
@@ -35,6 +37,8 @@ pub(in crate::tree) enum NodeInlineKeys<'a> {
 macro_rules! with_inline_keys_of_width {
     ($inline_keys:expr, |$of_width:ident| $body:expr) => {
         match $inline_keys {
+            #[cfg(feature = "one-byte-leaf-keys")]
+            NodeInlineKeys::One($of_width) => $body,
             NodeInlineKeys::Two($of_width) => $body,
             NodeInlineKeys::Four($of_width) => $body,
             NodeInlineKeys::Eight($of_width) => $body,
@@ -61,6 +65,8 @@ impl<'a> NodeInlineKeys<'a> {
         // SAFETY: forwarded, at the slots' width.
         unsafe {
             match slots {
+                #[cfg(feature = "one-byte-leaf-keys")]
+                InlineKeySlots::One(slots) => Self::One(InlineKeysOfWidth::new(slots, len)),
                 InlineKeySlots::Two(slots) => Self::Two(InlineKeysOfWidth::new(slots, len)),
                 InlineKeySlots::Four(slots) => Self::Four(InlineKeysOfWidth::new(slots, len)),
                 InlineKeySlots::Eight(slots) => Self::Eight(InlineKeysOfWidth::new(slots, len)),

@@ -43,6 +43,11 @@ pub type InlineWord = u64;
 /// nodes; [`WithInlineKey`] keeps the impl's declared width in both kinds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum InlineWidth {
+    /// The first byte (experiment: one-byte leaf keys): leaves of keys
+    /// whose impl gives 2.
+    #[cfg(feature = "one-byte-leaf-keys")]
+    #[doc(hidden)]
+    One,
     /// The first 2 bytes: the std integers' width, and under [`Auto`], fixed
     /// byte arrays'.
     Two,
@@ -56,6 +61,8 @@ impl InlineWidth {
     /// How many bytes the nodes keep.
     pub(crate) const fn byte_len(self) -> usize {
         match self {
+            #[cfg(feature = "one-byte-leaf-keys")]
+            Self::One => 1,
             Self::Two => 2,
             Self::Four => 4,
             Self::Eight => 8,

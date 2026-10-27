@@ -24,6 +24,10 @@ file = []
 # Read-only views of a map's nodes (`BBTreeMap::inspect`), for the visualizer
 # in `vis/`. No stability promise.
 inspect = []
+# Experiment (idea 4, not for release): leaves of keys whose inline keys
+# are 2 bytes keep 1, so a `u64` leaf's fit in its first cache line; they
+# read a window from its key again when they hand it up.
+one-byte-leaf-keys = []
 
 [lints.rust]
 # Verus sets `verus_only` while it verifies: the proofs' modules, which only

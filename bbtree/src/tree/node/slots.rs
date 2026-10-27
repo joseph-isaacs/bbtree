@@ -551,6 +551,8 @@ impl<'a, K> KeyList<'a, K> for NodeKeys<'a, K> {
 /// kind, key type and strategy, so each typed operation uses one width.
 #[derive(Clone, Copy)]
 pub(super) enum InlineKeySlots {
+    #[cfg(feature = "one-byte-leaf-keys")]
+    One(Slots<u8>),
     Two(Slots<u16>),
     Four(Slots<u32>),
     Eight(Slots<u64>),
@@ -561,6 +563,8 @@ pub(super) enum InlineKeySlots {
 macro_rules! with_slots_of_width {
     ($inline_keys:expr, |$slots:ident| $body:expr) => {
         match $inline_keys {
+            #[cfg(feature = "one-byte-leaf-keys")]
+            InlineKeySlots::One($slots) => $body,
             InlineKeySlots::Two($slots) => $body,
             InlineKeySlots::Four($slots) => $body,
             InlineKeySlots::Eight($slots) => $body,
@@ -581,6 +585,8 @@ impl InlineKeySlots {
         // SAFETY: forwarded, for the slot type of `width`.
         unsafe {
             match width {
+                #[cfg(feature = "one-byte-leaf-keys")]
+                InlineWidth::One => Self::One(Slots::new(anchor.cast(), capacity)),
                 InlineWidth::Two => Self::Two(Slots::new(anchor.cast(), capacity)),
                 InlineWidth::Four => Self::Four(Slots::new(anchor.cast(), capacity)),
                 InlineWidth::Eight => Self::Eight(Slots::new(anchor.cast(), capacity)),
@@ -591,6 +597,8 @@ impl InlineKeySlots {
     #[cfg(test)]
     pub(super) fn width(self) -> InlineWidth {
         match self {
+            #[cfg(feature = "one-byte-leaf-keys")]
+            Self::One(_) => InlineWidth::One,
             Self::Two(_) => InlineWidth::Two,
             Self::Four(_) => InlineWidth::Four,
             Self::Eight(_) => InlineWidth::Eight,
@@ -688,6 +696,10 @@ impl InlineKeySlots {
         // SAFETY: forwarded.
         unsafe {
             match (self, dest) {
+                #[cfg(feature = "one-byte-leaf-keys")]
+                (Self::One(source), Self::One(destination)) => {
+                    source.move_run_to(start, count, destination, dest_start);
+                }
                 (Self::Two(source), Self::Two(destination)) => {
                     source.move_run_to(start, count, destination, dest_start);
                 }
@@ -985,7 +997,25 @@ impl<K, S: InlineKeyStrategy<K>, Kind: NodeKind> KeySlots<K, S, Kind> {
         unsafe {
             let window = self.window(index);
             let key = self.keys.slot(index).read();
+            #[cfg(feature = "one-byte-leaf-keys")]
+            let window = self.rehydrated(&key, window);
             WindowedKey::from_parts(key, window)
+        }
+    }
+
+    /// `window`, of `key`, read again from the key where the node keeps
+    /// fewer bytes than a node above it (experiment: one-byte leaf keys):
+    /// a key read out may go up as a separator.
+    #[cfg(feature = "one-byte-leaf-keys")]
+    #[inline(always)]
+    fn rehydrated(self, key: &K, window: Window) -> Window {
+        let plan = NodePlan::<K>::of::<S, Kind>();
+        match plan.inliner() {
+            Some(inliner) if Kind::IS_LEAF && plan.rehydrates_windows() => Window::new(
+                self.prefix_len,
+                inliner.inline_key_at_while_keys_move(key, self.prefix_len),
+            ),
+            _ => window,
         }
     }
 
@@ -1077,6 +1107,8 @@ impl<K, S: InlineKeyStrategy<K>, Kind: NodeKind> KeySlots<K, S, Kind> {
             let window = self.window(index);
             let key = self.keys.remove(index, len);
             self.columns.remove(index, len);
+            #[cfg(feature = "one-byte-leaf-keys")]
+            let window = self.rehydrated(&key, window);
             WindowedKey::from_parts(key, window)
         }
     }
@@ -1105,6 +1137,8 @@ impl<K, S: InlineKeyStrategy<K>, Kind: NodeKind> KeySlots<K, S, Kind> {
             let key = self.keys.slot(index).read();
             self.columns.remove(index, len);
             self.keys.shift_strides_down(index, len);
+            #[cfg(feature = "one-byte-leaf-keys")]
+            let window = self.rehydrated(&key, window);
             WindowedKey::from_parts(key, window)
         }
     }

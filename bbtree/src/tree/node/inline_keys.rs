@@ -337,6 +337,8 @@ macro_rules! narrow_inline_slot {
     };
 }
 
+#[cfg(feature = "one-byte-leaf-keys")]
+narrow_inline_slot!(u8);
 narrow_inline_slot!(u16);
 narrow_inline_slot!(u32);
 
@@ -949,6 +951,10 @@ mod tests {
     /// Heap-backed byte strings keep all 8 bytes in leaves, arrays keep 2;
     /// integers and keys with their own impl keep what it says.
     #[test]
+    #[cfg_attr(
+        feature = "one-byte-leaf-keys",
+        ignore = "asserts the leaves' width, which the experiment changes"
+    )]
     fn strategies_keep_their_keys_widths() {
         fn width<K, S: crate::InlineKeyStrategy<K>>() -> Option<InlineWidth> {
             NodePlan::<K>::of::<S, Leaf<K, (), S>>().inline_width()
@@ -1179,6 +1185,8 @@ mod tests {
                             key.cmp_tied::<Leaf<Vec<u8>, (), Auto>>(target, &stored)
                         }
                         InlineWidth::Two => unreachable!(),
+                        #[cfg(feature = "one-byte-leaf-keys")]
+                        InlineWidth::One => unreachable!(),
                     };
                     assert_eq!(compared, search.cmp(&stored));
                 }

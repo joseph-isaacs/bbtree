@@ -260,6 +260,22 @@ impl<K, V, C: NodeConfig, L> NodeLayout<K, V, C, L> {
     pub(in crate::tree) const PLAIN_LEAF: LeafLayout =
         Self::compute_leaf(None, false, Self::leaf_header(false));
 
+    #[cfg(feature = "one-byte-leaf-keys")]
+    pub(super) const ONE_BYTE_INLINE_LEAF: LeafLayout =
+        Self::compute_leaf(Some(InlineWidth::One), false, Self::leaf_header(false));
+
+    #[cfg(feature = "one-byte-leaf-keys")]
+    pub(super) const ONE_BYTE_INLINE_HASH_TAGGED_LEAF: LeafLayout =
+        Self::compute_leaf(Some(InlineWidth::One), true, Self::leaf_header(false));
+
+    #[cfg(feature = "one-byte-leaf-keys")]
+    pub(super) const LATCHED_ONE_BYTE_INLINE_LEAF: LeafLayout =
+        Self::compute_leaf(Some(InlineWidth::One), false, Self::leaf_header(true));
+
+    #[cfg(feature = "one-byte-leaf-keys")]
+    pub(super) const LATCHED_ONE_BYTE_INLINE_HASH_TAGGED_LEAF: LeafLayout =
+        Self::compute_leaf(Some(InlineWidth::One), true, Self::leaf_header(true));
+
     pub(super) const TWO_BYTE_INLINE_LEAF: LeafLayout =
         Self::compute_leaf(Some(InlineWidth::Two), false, Self::leaf_header(false));
 
@@ -347,6 +363,14 @@ impl<K, V, C: NodeConfig, L> NodeLayout<K, V, C, L> {
     ) -> LeafLayout {
         match (inline_width, hash_tags, latched) {
             (None, _, false) => Self::PLAIN_LEAF,
+            #[cfg(feature = "one-byte-leaf-keys")]
+            (Some(InlineWidth::One), false, false) => Self::ONE_BYTE_INLINE_LEAF,
+            #[cfg(feature = "one-byte-leaf-keys")]
+            (Some(InlineWidth::One), true, false) => Self::ONE_BYTE_INLINE_HASH_TAGGED_LEAF,
+            #[cfg(feature = "one-byte-leaf-keys")]
+            (Some(InlineWidth::One), false, true) => Self::LATCHED_ONE_BYTE_INLINE_LEAF,
+            #[cfg(feature = "one-byte-leaf-keys")]
+            (Some(InlineWidth::One), true, true) => Self::LATCHED_ONE_BYTE_INLINE_HASH_TAGGED_LEAF,
             (Some(InlineWidth::Two), false, false) => Self::TWO_BYTE_INLINE_LEAF,
             (Some(InlineWidth::Four), false, false) => Self::FOUR_BYTE_INLINE_LEAF,
             (Some(InlineWidth::Eight), false, false) => Self::EIGHT_BYTE_INLINE_LEAF,
@@ -375,6 +399,8 @@ impl<K, V, C: NodeConfig, L> NodeLayout<K, V, C, L> {
     pub(super) fn internal(inline_width: Option<InlineWidth>, latched: bool) -> InternalLayout {
         match (inline_width, latched) {
             (None, false) => Self::PLAIN_INTERNAL,
+            #[cfg(feature = "one-byte-leaf-keys")]
+            (Some(InlineWidth::One), _) => unreachable!("only leaves keep one byte"),
             (Some(InlineWidth::Two), false) => Self::TWO_BYTE_INLINE_INTERNAL,
             (Some(InlineWidth::Four), false) => Self::FOUR_BYTE_INLINE_INTERNAL,
             (Some(InlineWidth::Eight), false) => Self::EIGHT_BYTE_INLINE_INTERNAL,
@@ -512,10 +538,22 @@ impl<K, V, C: NodeConfig, L> NodeLayout<K, V, C, L> {
             Self::MIN_CAPACITY,
         )
         .next_multiple_of(align);
+        let max_capacity = Self::max_capacity(page_size, inline_key_size);
+        // Experiment (one-byte leaf keys): 1-byte inline keys stop at the end
+        // of the first cache line, the point of keeping one byte.
+        #[cfg(feature = "one-byte-leaf-keys")]
+        let max_capacity = if inline_key_size == 1 {
+            Self::min(
+                max_capacity,
+                Self::CACHE_LINE_SIZE - Self::inline_keys_offset(header),
+            )
+        } else {
+            max_capacity
+        };
         let capacity = Self::capacity_in(
             header,
             size,
-            Self::max_capacity(page_size, inline_key_size),
+            max_capacity,
             column_size,
             trailing,
             keeps_keys,
@@ -1218,6 +1256,17 @@ mod tests {
         .assert_inline::<u8, ()>(InlineWidth::Eight);
     }
 
+    /// With one-byte leaf keys (experiment), a `u64` leaf keeps 56, which
+    /// end with its first cache line: (8 + 56 = 64) + 16·57 = 976.
+    #[test]
+    #[cfg(feature = "one-byte-leaf-keys")]
+    fn one_byte_leaf_keys_end_with_the_first_cache_line() {
+        let leaf = NodeLayout::<u64, u64, DefaultNodeConfig>::ONE_BYTE_INLINE_LEAF;
+        assert_eq!(leaf.keys.capacity, 56);
+        assert_eq!(leaf.keys.inline_keys_offset, Some(8));
+        assert_eq!(NodePtr::<u64, u64, Auto>::leaf_layout(), leaf);
+    }
+
     /// The layout `u64` keys get with their inline keys: entries of 16
     /// bytes after 2 bytes each of inline keys, so 55 keys instead of 63.
     #[test]
@@ -1550,6 +1599,10 @@ mod tests {
     /// internal nodes, size the nodes by the same rules.
     #[test]
     #[cfg_attr(not(target_pointer_width = "64"), ignore = "assumes 64-bit pointers")]
+    #[cfg_attr(
+        feature = "one-byte-leaf-keys",
+        ignore = "asserts the leaves' width, which the experiment changes"
+    )]
     fn large_pages_hold_more_keys() {
         type Layouts = NodeLayout<u64, u64, LargePages>;
         let node = |size, capacity, keys_offset, trailing_offset| ExpectedNode {

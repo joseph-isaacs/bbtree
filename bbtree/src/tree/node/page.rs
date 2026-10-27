@@ -1320,6 +1320,8 @@ mod tests {
         /// The bytes of all `capacity` inline-key slots, at their width.
         fn of_inline_keys(slots: InlineKeySlots, capacity: usize) -> Self {
             match slots {
+                #[cfg(feature = "one-byte-leaf-keys")]
+                InlineKeySlots::One(slots) => Self::of(slots, capacity),
                 InlineKeySlots::Two(slots) => Self::of(slots, capacity),
                 InlineKeySlots::Four(slots) => Self::of(slots, capacity),
                 InlineKeySlots::Eight(slots) => Self::of(slots, capacity),
@@ -1513,6 +1515,10 @@ mod tests {
     /// strings and integers get the layout with inline keys.
     #[test]
     #[cfg_attr(not(target_pointer_width = "64"), ignore = "assumes 64-bit pointers")]
+    #[cfg_attr(
+        feature = "one-byte-leaf-keys",
+        ignore = "asserts the leaves' width, which the experiment changes"
+    )]
     fn only_inline_keys_change_the_layout() {
         assert!(!NodePtr::<[u64; 1], u64, Auto>::has_inline_keys());
         assert_eq!(

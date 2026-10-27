@@ -618,6 +618,53 @@ vector_count!(
     _mm_packs_epi32
 );
 
+/// 1-byte slots (experiment: one-byte leaf keys) count in AVX-512BW
+/// vectors of 64, and with the compiler's count elsewhere.
+#[cfg(feature = "one-byte-leaf-keys")]
+impl VectorCount for u8 {
+    #[inline(always)]
+    fn equal_range_in_vectors(
+        slots: Slots<Self>,
+        len: usize,
+        target: Self,
+    ) -> Option<Range<usize>> {
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512bw"))]
+        {
+            use core::arch::x86_64::{
+                _mm512_mask_cmpeq_epu8_mask, _mm512_mask_cmplt_epu8_mask, _mm512_maskz_loadu_epi8,
+                _mm512_set1_epi8,
+            };
+
+            const LANES: usize = 64;
+            let (mut below, mut equal) = (0, 0);
+            let mut start = 0;
+            // SAFETY: the cfg checks AVX-512BW. Each mask selects the lanes
+            // of `start..slots.capacity()`, within the slots, and a masked
+            // load reads only the lanes it selects.
+            unsafe {
+                let target = _mm512_set1_epi8(target as i8);
+                while start < slots.capacity() {
+                    let lanes = (slots.capacity() - start).min(LANES);
+                    let in_slots = u64::MAX >> (LANES - lanes);
+                    let chunk = _mm512_maskz_loadu_epi8(in_slots, slots.as_ptr().add(start).cast());
+                    let live = len.saturating_sub(start).min(LANES) as u32;
+                    let below_bits = _mm512_mask_cmplt_epu8_mask(in_slots, chunk, target);
+                    let equal_bits = _mm512_mask_cmpeq_epu8_mask(in_slots, chunk, target);
+                    below += U64EqualityMask::keep_low_bits(below_bits, live).count_ones() as usize;
+                    equal += U64EqualityMask::keep_low_bits(equal_bits, live).count_ones() as usize;
+                    start += LANES;
+                }
+            }
+            Some(below..below + equal)
+        }
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512bw")))]
+        {
+            let _ = (slots, len, target);
+            None
+        }
+    }
+}
+
 /// 8-byte slots, those of std byte strings' leaves and of 8-byte `InlineKey`
 /// impls, keep the compiler's count with AVX-512, where it beats explicit
 /// vectors on string maps (05-fence-key.md). The exception is 28 to 31

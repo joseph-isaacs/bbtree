@@ -17,6 +17,8 @@ mod inline_key;
 mod insert;
 mod iterator;
 mod node_config;
+#[cfg(feature = "one-byte-leaf-keys")]
+mod one_byte_leaf_keys;
 mod prefix;
 mod type_properties;
 
