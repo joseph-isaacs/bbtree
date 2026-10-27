@@ -1,10 +1,10 @@
 //! Batched lookups without futures: each lane is an explicit state machine,
-//! and a FIFO work queue of lane indices runs them. Popping a lane advances
-//! it to its next fetch, which it prefetches; a lane still descending goes
-//! back to the queue's tail, so the others run while its line arrives.
+//! run on the async executor's schedule. Each round advances every live lane
+//! to its next fetch, which it prefetches, so the others run while its line
+//! arrives.
 //!
 //! The same descent, stages and prefetches as [`Lane::find`], for an A/B
-//! against the async executor (doc 12).
+//! against the async lanes (doc 12).
 
 use core::borrow::Borrow;
 
@@ -16,7 +16,7 @@ use crate::tree::node::leaf::{CandidateLine, Leaf};
 use crate::tree::root::Tree;
 use crate::tree::search::Found;
 
-/// What a queued lane does when it next runs: the line it prefetched last
+/// What a lane does when it next runs: the line it prefetched last
 /// has arrived, or is arriving.
 #[derive(Clone, Copy)]
 enum Stage {
@@ -41,13 +41,13 @@ enum Progress {
 
 /// [`Lane`] and where its descent stands. `index` is the chosen edge, then
 /// the leaf candidate, as in [`Lane::find`].
-struct QueuedLane<'q, K, V, S, Q: ?Sized> {
+struct SyncLane<'q, K, V, S, Q: ?Sized> {
     lane: Lane<'q, K, V, S, Q, ()>,
     index: u16,
     stage: Stage,
 }
 
-impl<'q, K, V, S, Q> QueuedLane<'q, K, V, S, Q>
+impl<'q, K, V, S, Q> SyncLane<'q, K, V, S, Q>
 where
     K: Borrow<Q>,
     S: InlineKeyStrategy<K>,
@@ -184,48 +184,40 @@ where
     }
 }
 
-/// The indices of a batch's descending lanes, oldest fetch first, in a
-/// ring of `N` slots, since each lane is in it at most once. Borrows the
-/// ring rather than holding it: indexing an array in the same value as the
-/// cursors keeps LLVM from holding the cursors in registers.
-struct WorkQueue<'r, const N: usize> {
-    ring: &'r mut [usize; N],
-    head: usize,
-    len: usize,
-}
-
-impl<'r, const N: usize> WorkQueue<'r, N> {
-    fn new(ring: &'r mut [usize; N]) -> Self {
-        Self {
-            ring,
-            head: 0,
-            len: 0,
-        }
-    }
-
+impl<'a, K: 'a, V: 'a, S, Q> SyncLane<'_, K, V, S, Q>
+where
+    K: Borrow<Q>,
+    S: InlineKeyStrategy<K>,
+    Q: Ord + ?Sized,
+{
+    /// The async executor's schedule: a bit per live lane, up to 64, each
+    /// round advancing every live lane once. The next lane's index comes from
+    /// the mask in a register, not from memory, so the CPU can start its step
+    /// before the current one ends.
     #[inline(always)]
-    fn push(&mut self, lane: usize) {
-        let tail = self.head + self.len;
-        self.ring[if tail >= N { tail - N } else { tail }] = lane;
-        self.len += 1;
-    }
-
-    #[inline(always)]
-    fn pop(&mut self) -> Option<usize> {
-        if self.len == 0 {
-            return None;
+    fn run_rounds(lanes: &mut [Self], outputs: &mut [Option<&'a V>]) {
+        debug_assert!(lanes.len() <= u64::BITS as usize);
+        let mut live = 0_u64;
+        for (index, lane) in lanes.iter().enumerate() {
+            live |= u64::from(lane.start()) << index;
         }
-        let lane = self.ring[self.head];
-        self.head = if self.head + 1 == N { 0 } else { self.head + 1 };
-        self.len -= 1;
-        Some(lane)
+        while live != 0 {
+            let mut round = live;
+            while round != 0 {
+                let index = round.trailing_zeros() as usize;
+                round &= round - 1;
+                if lanes[index].advance(&mut outputs[index]) == Progress::Finished {
+                    live &= !(1 << index);
+                }
+            }
+        }
     }
 }
 
 impl<K, V, S: InlineKeyStrategy<K>> Tree<K, V, S> {
-    /// [`Self::find_many`], its lanes run by a work queue instead of the
-    /// async executor; `length` is the tree's.
-    pub(crate) fn find_many_queued<Q, const N: usize>(
+    /// [`Self::find_many`], its lanes explicit state machines instead of
+    /// futures, on the async executor's schedule; `length` is the tree's.
+    pub(crate) fn find_many_sync<Q, const N: usize>(
         &self,
         keys: [&Q; N],
         length: usize,
@@ -244,18 +236,18 @@ impl<K, V, S: InlineKeyStrategy<K>> Tree<K, V, S> {
             return keys.map(|key| self.find_in_batch(key));
         };
         let shared = root_page.shared_prefix();
-        let mut lanes = keys.map(|key| QueuedLane::new(Lane::new(key, root, shared, ())));
+        let mut lanes = keys.map(|key| SyncLane::new(Lane::new(key, root, shared, ())));
         let mut values = [None; N];
-        let mut ring = [0; N];
-        let mut queue = WorkQueue::new(&mut ring);
-        for (index, lane) in lanes.iter().enumerate() {
-            if lane.start() {
-                queue.push(index);
-            }
-        }
-        while let Some(index) = queue.pop() {
-            if lanes[index].advance(&mut values[index]) == Progress::Fetching {
-                queue.push(index);
+        const MASK_BITS: usize = u64::BITS as usize;
+        if N <= MASK_BITS {
+            SyncLane::run_rounds(&mut lanes, &mut values);
+        } else {
+            // More lanes than mask bits: 64 at a time.
+            for (lanes, values) in lanes
+                .chunks_mut(MASK_BITS)
+                .zip(values.chunks_mut(MASK_BITS))
+            {
+                SyncLane::run_rounds(lanes, values);
             }
         }
         values
@@ -274,7 +266,7 @@ mod tests {
     use crate::tree::test_support::TestRng;
 
     #[test]
-    fn queued_lookups_match_async_lanes() {
+    fn sync_lookups_match_async_lanes() {
         let pages = TestPages::<u64, u64>::new();
         let mut tree = Tree::<_, _, Auto>::EMPTY;
         let mut length = 0;
@@ -283,11 +275,20 @@ mod tests {
         for &key in &keys {
             tree.insert(key, key, &pages, &mut length);
         }
+        // 65 runs the lanes 64 at a time.
+        for chunk in keys.chunks(65) {
+            let queries: [u64; 65] =
+                core::array::from_fn(|i| chunk[i % chunk.len()] + (i as u64 % 2));
+            assert_eq!(
+                tree.find_many_sync(queries.each_ref(), usize::MAX),
+                tree.find_many(queries.each_ref(), usize::MAX)
+            );
+        }
         for chunk in keys.chunks(64) {
             let queries: [u64; 64] =
                 core::array::from_fn(|i| chunk[i % chunk.len()] + (i as u64 % 2));
             assert_eq!(
-                tree.find_many_queued(queries.each_ref(), usize::MAX),
+                tree.find_many_sync(queries.each_ref(), usize::MAX),
                 tree.find_many(queries.each_ref(), usize::MAX)
             );
         }
@@ -296,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn queued_string_lookups_match_async_lanes() {
+    fn sync_string_lookups_match_async_lanes() {
         let pages = TestPages::<String, usize>::new();
         let mut tree = Tree::<_, _, Auto>::EMPTY;
         let mut length = 0;
@@ -324,7 +325,7 @@ mod tests {
             });
             let queries = queries.each_ref().map(String::as_str);
             assert_eq!(
-                tree.find_many_queued(queries, usize::MAX),
+                tree.find_many_sync(queries, usize::MAX),
                 tree.find_many(queries, usize::MAX)
             );
         }

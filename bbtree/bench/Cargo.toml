@@ -7,8 +7,8 @@ description = "bbtree's CI benchmarks: BBTreeMap against std's maps and hashbrow
 default-run = "bbtree-bench"
 
 [dependencies]
-# `batch-work-queue` for the batch A/B, `bbtree-bench-batch-queue`.
-bbtree = { path = "..", features = ["batch-work-queue"] }
+# `batch-sync-lanes` for the batch A/B, `bbtree-bench-batch-sync`.
+bbtree = { path = "..", features = ["batch-sync-lanes"] }
 hashbrown = "0.17"
 mimalloc = "0.1"
 # Runs a cell's untimed setup on all cores; timed regions stay on one thread.
@@ -24,10 +24,10 @@ siphasher = "1"
 name = "bbtree-bench"
 path = "src/bin/bbtree-bench.rs"
 
-# Batched lookups: the async lanes against the sync work queue (doc 12).
+# Batched lookups: the async lanes against the sync ones (doc 12).
 [[bin]]
-name = "bbtree-bench-batch-queue"
-path = "src/bin/bbtree-bench-batch-queue.rs"
+name = "bbtree-bench-batch-sync"
+path = "src/bin/bbtree-bench-batch-sync.rs"
 
 # Measures memory with a counting allocator around mimalloc: the global
 # allocator is fixed at compile time, so the counting one gets its own binary

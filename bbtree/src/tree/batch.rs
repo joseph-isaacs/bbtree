@@ -31,8 +31,8 @@ use super::shared_prefix::SharedPrefix;
 use crate::allocator::Allocator;
 use crate::inline_key::InlineKeyStrategy;
 
-#[cfg(any(test, feature = "batch-work-queue"))]
-mod work_queue;
+#[cfg(any(test, feature = "batch-sync-lanes"))]
+mod sync_lanes;
 
 /// A call-site marker that compiles the batch's leaf searches apart from
 /// the single-key `get`'s, without changing node layouts: sharing one

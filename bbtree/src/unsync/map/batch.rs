@@ -35,16 +35,16 @@ impl<K, V, S: InlineKeyStrategy<K>, A: Allocator + Clone> BBTreeMap<K, V, S, A> 
         self.tree.find_many(keys, self.length)
     }
 
-    /// [`Self::get_many`], its lanes run by a sync work queue instead of the
-    /// async executor: an A/B prototype (doc 12).
-    #[cfg(feature = "batch-work-queue")]
+    /// [`Self::get_many`], its lanes explicit state machines instead of
+    /// futures: an A/B prototype (doc 12).
+    #[cfg(feature = "batch-sync-lanes")]
     #[doc(hidden)]
-    pub fn get_many_queued<Q, const N: usize>(&self, keys: [&Q; N]) -> [Option<&V>; N]
+    pub fn get_many_sync<Q, const N: usize>(&self, keys: [&Q; N]) -> [Option<&V>; N]
     where
         K: Borrow<Q> + Ord,
         Q: Ord + ?Sized,
     {
-        self.tree.find_many_queued(keys, self.length)
+        self.tree.find_many_sync(keys, self.length)
     }
 
     /// Inserts entries in input order, returning each previous value.

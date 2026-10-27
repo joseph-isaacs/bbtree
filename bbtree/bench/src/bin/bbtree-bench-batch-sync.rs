@@ -1,6 +1,10 @@
-//! A/B of batched lookups (doc 12) on 10M-entry maps: one key a call
-//! (`get`), lanes polled by the async executor (`get_many`), and lanes run
-//! by a sync work queue (`get_many_queued`). One pass per cell, ns per key.
+//! A/B of batched lookups (doc 12): one key a call (`get`), lanes as
+//! futures polled by the async executor (`get_many`), and lanes as state
+//! machines on the same schedule (`get_many_sync`). One pass per cell, ns
+//! per key. 10M-entry maps wait on memory; 64K-entry maps, just past the
+//! batch cutoff, stay in cache, so their time is the lanes' own work.
+
+use std::env;
 
 use std::hint::black_box;
 use std::time::Instant;
@@ -28,17 +32,17 @@ impl KeyScrambler {
 enum Lookup {
     OneKeyACall,
     AsyncLanes,
-    WorkQueue,
+    SyncLanes,
 }
 
 impl Lookup {
-    const ALL: [Self; 3] = [Self::OneKeyACall, Self::AsyncLanes, Self::WorkQueue];
+    const ALL: [Self; 3] = [Self::OneKeyACall, Self::AsyncLanes, Self::SyncLanes];
 
     fn name(self) -> &'static str {
         match self {
             Self::OneKeyACall => "get",
             Self::AsyncLanes => "get_many async",
-            Self::WorkQueue => "get_many queue",
+            Self::SyncLanes => "get_many sync",
         }
     }
 }
@@ -46,18 +50,18 @@ impl Lookup {
 /// One map and its probes: keys it holds, and keys between them it lacks.
 struct BatchCells<K> {
     map: BBTreeMap<K, u64>,
+    entries: u64,
     hits: Vec<K>,
     misses: Vec<K>,
 }
 
 impl<K: Ord + Clone> BatchCells<K> {
-    const ENTRIES: u64 = 10_000_000;
     const PROBES: usize = 3_000_000;
 
-    fn new(key: impl Fn(u64) -> K) -> Self {
+    fn new(entries: u64, key: impl Fn(u64) -> K) -> Self {
         // Even keys, in random insertion order, as a map filled over time
         // would be: Fisher-Yates.
-        let mut order: Vec<u64> = (0..Self::ENTRIES).collect();
+        let mut order: Vec<u64> = (0..entries).collect();
         for last in (1..order.len()).rev() {
             let pick = KeyScrambler::scramble(last as u64) % (last as u64 + 1);
             order.swap(last, pick as usize);
@@ -66,14 +70,15 @@ impl<K: Ord + Clone> BatchCells<K> {
         for index in order {
             map.insert(key(index * 2), index);
         }
-        assert_eq!(map.len() as u64, Self::ENTRIES);
+        assert_eq!(map.len() as u64, entries);
         let probe = |salt: u64, odd: u64| -> Vec<K> {
             (0..Self::PROBES as u64)
-                .map(|i| key(KeyScrambler::scramble(i ^ salt) % Self::ENTRIES * 2 + odd))
+                .map(|i| key(KeyScrambler::scramble(i ^ salt) % entries * 2 + odd))
                 .collect()
         };
         Self {
             map,
+            entries,
             hits: probe(0x1234_5678, 0),
             misses: probe(0x8765_4321, 1),
         }
@@ -107,13 +112,31 @@ impl<K: Ord + Clone> BatchCells<K> {
     #[inline(always)]
     fn lookup<const N: usize>(&self, lookup: Lookup, keys: [&K; N]) -> usize {
         match lookup {
-            Lookup::OneKeyACall => keys.iter().filter(|k| self.map.get(*k).is_some()).count(),
-            Lookup::AsyncLanes => black_box(self.map.get_many(keys)).iter().flatten().count(),
-            Lookup::WorkQueue => black_box(self.map.get_many_queued(keys))
-                .iter()
-                .flatten()
-                .count(),
+            Lookup::OneKeyACall => self.one_key_a_call(keys),
+            Lookup::AsyncLanes => self.async_lanes(keys),
+            Lookup::SyncLanes => self.sync_lanes(keys),
         }
+    }
+
+    // One function per lookup, so each one's code has its own symbol to
+    // read: one call per batch.
+
+    #[inline(never)]
+    fn one_key_a_call<const N: usize>(&self, keys: [&K; N]) -> usize {
+        keys.iter().filter(|k| self.map.get(*k).is_some()).count()
+    }
+
+    #[inline(never)]
+    fn async_lanes<const N: usize>(&self, keys: [&K; N]) -> usize {
+        black_box(self.map.get_many(keys)).iter().flatten().count()
+    }
+
+    #[inline(never)]
+    fn sync_lanes<const N: usize>(&self, keys: [&K; N]) -> usize {
+        black_box(self.map.get_many_sync(keys))
+            .iter()
+            .flatten()
+            .count()
     }
 
     fn report(&self, keys: &str) {
@@ -130,19 +153,33 @@ impl<K: Ord + Clone> BatchCells<K> {
                     .zip(cells)
                     .map(|(lookup, ns)| format!("{} {ns:6.1}", lookup.name()))
                     .collect();
-                println!("{keys:6} {outcome:4} x{batch}: {}", row.join(" | "));
+                let entries = self.entries;
+                println!(
+                    "{keys:6} {entries:>8} {outcome:4} x{batch}: {}",
+                    row.join(" | ")
+                );
             }
         }
     }
 }
 
+/// `bbtree-bench-batch-sync [u64|string] [entries]`: both key kinds at 10M
+/// and 64K entries unless named.
 fn main() {
-    let only = std::env::args().nth(1);
-    if only.as_deref().is_none_or(|keys| keys == "u64") {
-        BatchCells::new(|n| n).report("u64");
-    }
-    if only.as_deref().is_none_or(|keys| keys == "string") {
-        BatchCells::new(|n| format!("user/{:016x}/profile", KeyScrambler::scramble(n)))
+    let keys = env::args().nth(1);
+    let entries: Vec<u64> = match env::args().nth(2) {
+        Some(entries) => vec![entries.parse().expect("entries is a number")],
+        None => vec![10_000_000, 65_536],
+    };
+    for &entries in &entries {
+        if keys.as_deref().is_none_or(|keys| keys == "u64") {
+            BatchCells::new(entries, |n| n).report("u64");
+        }
+        if keys.as_deref().is_none_or(|keys| keys == "string") {
+            BatchCells::new(entries, |n| {
+                format!("user/{:016x}/profile", KeyScrambler::scramble(n))
+            })
             .report("string");
+        }
     }
 }
