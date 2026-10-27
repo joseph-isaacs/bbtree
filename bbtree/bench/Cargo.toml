@@ -38,8 +38,13 @@ lto = "fat"
 debug = "line-tables-only"
 
 [features]
-# Experiment (idea 3): builds bbtree with 4-byte edges.
+# Experiments (idea 3 and follow-ups): build bbtree with one packed edge
+# format; the arena ones build `bbtree-unsync` maps on a `PageArena`.
 compact-edges = ["bbtree/compact-edges"]
+edges-48 = ["bbtree/edges-48"]
+edges-56 = ["bbtree/edges-56"]
+arena-edges-32 = ["bbtree/arena-edges-32"]
+arena-edges-24 = ["bbtree/arena-edges-24"]
 
 # A workspace of its own: the benchmark dependencies stay out of the library's
 # dependency graph and lockfile.

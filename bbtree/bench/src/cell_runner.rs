@@ -8,12 +8,10 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use bbtree::unsync;
-
 use crate::command_line::{CellRequest, Named};
 use crate::datasets::{DataDirectory, DataFile, JsonObjectCorpus, KeyList};
 use crate::keys::{BenchKey, KeyKind, KeyMaker};
-use crate::map_adapters::{CountedBBTree, MapKind, MapUnderTest};
+use crate::map_adapters::{CountedBBTree, MapKind, MapUnderTest, UnsyncMap};
 use crate::memory::{ResidentSet, RunMode};
 use crate::operations::{
     ManyMapsCell, ManyMapsKeys, PreparedCell, SingleMapCell, SingleMapKeys, Stopwatch,
@@ -218,7 +216,7 @@ impl CellRun {
     ) -> Result<CellMeasurement, String> {
         match self.request.cell().map() {
             MapKind::BBTree => self.measure::<CountedBBTree<K, V>, K, V>(prepared),
-            MapKind::Unsync => self.measure::<unsync::BBTreeMap<K, V>, K, V>(prepared),
+            MapKind::Unsync => self.measure::<UnsyncMap<K, V>, K, V>(prepared),
             MapKind::UnsyncInline => K::measure_with_inline_keys(self, prepared),
             MapKind::StdBTree => self.measure::<BTreeMap<K, V>, K, V>(prepared),
             MapKind::Hashbrown => self.measure::<hashbrown::HashMap<K, V>, K, V>(prepared),

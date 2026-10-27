@@ -17,6 +17,14 @@ mod inline_key;
 mod insert;
 mod iterator;
 mod node_config;
+#[cfg(any(
+    feature = "compact-edges",
+    feature = "edges-48",
+    feature = "edges-56",
+    feature = "arena-edges-32",
+    feature = "arena-edges-24"
+))]
+mod packed_edges;
 mod prefix;
 mod type_properties;
 

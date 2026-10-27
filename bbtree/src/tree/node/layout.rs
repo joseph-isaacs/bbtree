@@ -1218,6 +1218,25 @@ mod tests {
         .assert_inline::<u8, ()>(InlineWidth::Eight);
     }
 
+    /// Packed edges (experiments) give a 512 B internal node of `u64`s more
+    /// children than its 49 of 8-byte edges.
+    #[test]
+    #[cfg(any(
+        feature = "compact-edges",
+        feature = "edges-48",
+        feature = "edges-56",
+        feature = "arena-edges-32",
+        feature = "arena-edges-24"
+    ))]
+    fn packed_edges_hold_more_children() {
+        let internal = NodeLayout::<u64, u64, DefaultNodeConfig>::TWO_BYTE_INLINE_INTERNAL;
+        std::println!(
+            "a u64 internal node holds {} children",
+            internal.keys.capacity + 1
+        );
+        assert!(internal.keys.capacity + 1 > 49);
+    }
+
     /// The layout `u64` keys get with their inline keys: entries of 16
     /// bytes after 2 bytes each of inline keys, so 55 keys instead of 63.
     #[test]

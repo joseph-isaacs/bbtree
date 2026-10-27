@@ -91,7 +91,7 @@ impl MapKind {
     fn unsupported_operations(self) -> &'static [Operation] {
         match self {
             Self::BBTree => <CountedBBTree<u64, u64> as MapUnderTest<u64, u64>>::UNSUPPORTED,
-            Self::Unsync => <unsync::BBTreeMap<u64, u64> as MapUnderTest<u64, u64>>::UNSUPPORTED,
+            Self::Unsync => <UnsyncMap<u64, u64> as MapUnderTest<u64, u64>>::UNSUPPORTED,
             Self::UnsyncInline => {
                 <unsync::BBTreeMap<u64, u64, WithInlineKey> as MapUnderTest<u64, u64>>::UNSUPPORTED
             }
@@ -185,12 +185,22 @@ pub(crate) trait MapUnderTest<K: BenchKey, V: BenchValue>: Sized {
     }
 }
 
-impl<K: BenchKey, V: BenchValue> MapUnderTest<K, V> for unsync::BBTreeMap<K, V> {
+/// Where `bbtree-unsync` maps take their pages: the global allocator, or
+/// with an arena edge format (experiment), a `PageArena` per map.
+#[cfg(not(any(feature = "arena-edges-32", feature = "arena-edges-24")))]
+pub(crate) type UnsyncPages = bbtree::Global;
+#[cfg(any(feature = "arena-edges-32", feature = "arena-edges-24"))]
+pub(crate) type UnsyncPages = bbtree::PageArena;
+
+/// The `bbtree-unsync` map under test.
+pub(crate) type UnsyncMap<K, V> = unsync::BBTreeMap<K, V, bbtree::Auto, UnsyncPages>;
+
+impl<K: BenchKey, V: BenchValue> MapUnderTest<K, V> for UnsyncMap<K, V> {
     /// Not written yet.
     const UNSUPPORTED: &'static [Operation] = &[];
 
     fn new() -> Self {
-        unsync::BBTreeMap::new()
+        unsync::BBTreeMap::new_in(UnsyncPages::default())
     }
 
     fn entry_count(&self) -> usize {
@@ -221,8 +231,18 @@ impl<K: BenchKey, V: BenchValue> MapUnderTest<K, V> for unsync::BBTreeMap<K, V> 
         unsync::BBTreeMap::pop_first(self)
     }
 
+    #[cfg(not(any(feature = "arena-edges-32", feature = "arena-edges-24")))]
     fn from_sorted_entries(entries: Vec<(K, V)>) -> Self {
         entries.into_iter().collect()
+    }
+
+    /// `collect` builds in the global allocator only, so in an arena this
+    /// inserts them, and `bulk_build` doesn't compare with the default.
+    #[cfg(any(feature = "arena-edges-32", feature = "arena-edges-24"))]
+    fn from_sorted_entries(entries: Vec<(K, V)>) -> Self {
+        let mut map = <Self as MapUnderTest<K, V>>::new();
+        map.extend(entries);
+        map
     }
 
     fn bump_count(&mut self, key: K) {

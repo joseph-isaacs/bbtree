@@ -314,74 +314,219 @@ impl LatchedNodeHeader {
     }
 }
 
-#[cfg(all(feature = "compact-edges", feature = "file"))]
-compile_error!("compact edges (an experiment) don't support file maps");
+// Experiments (ideas 3 and its follow-ups): at most one edge format.
+#[cfg(any(
+    all(feature = "compact-edges", feature = "edges-48"),
+    all(feature = "compact-edges", feature = "edges-56"),
+    all(feature = "compact-edges", feature = "arena-edges-32"),
+    all(feature = "compact-edges", feature = "arena-edges-24"),
+    all(feature = "edges-48", feature = "edges-56"),
+    all(feature = "edges-48", feature = "arena-edges-32"),
+    all(feature = "edges-48", feature = "arena-edges-24"),
+    all(feature = "edges-56", feature = "arena-edges-32"),
+    all(feature = "edges-56", feature = "arena-edges-24"),
+    all(feature = "arena-edges-32", feature = "arena-edges-24"),
+))]
+compile_error!("pick at most one edge format feature");
+
+#[cfg(all(
+    feature = "file",
+    any(
+        feature = "compact-edges",
+        feature = "edges-48",
+        feature = "edges-56",
+        feature = "arena-edges-32",
+        feature = "arena-edges-24"
+    )
+))]
+compile_error!("packed edges (an experiment) don't support file maps");
 
 /// What an internal node stores for each edge: the child's tagged pointer.
-#[cfg(not(feature = "compact-edges"))]
+#[cfg(not(any(
+    feature = "compact-edges",
+    feature = "edges-48",
+    feature = "edges-56",
+    feature = "arena-edges-32",
+    feature = "arena-edges-24"
+)))]
 pub(in crate::tree) type EdgeSlot<K, V, S> = NodePtr<K, V, S>;
 
-/// What an internal node stores for each edge (experiment: compact edges):
-/// the child's page number, in 64-byte units, within the 128 GiB-aligned
-/// window of addresses its parent's page is in, shifted up past the
-/// child's leaf tag. Never 0, which a latched tree's zeroed slot holds: no
-/// page starts a window. Moves between nodes keep it, as every page of a
-/// tree is in one window, which writing an edge checks.
+/// How a packed edge encodes its child (experiments): `BYTES` bytes, little
+/// endian, of `(page_number << 1) | leaf_tag`, where the page number counts
+/// `1 << PAGE_BITS`-byte units from the start of the `1 << WINDOW_BITS`-byte,
+/// self-aligned window of addresses the parent's page is in. Every page of
+/// a tree must be in that window, which writing an edge checks; decoding
+/// takes the window's start from the parent's address, with one AND. A
+/// window of all addresses (`WINDOW_BITS = 64`) needs no such check.
+#[cfg(any(
+    feature = "compact-edges",
+    feature = "edges-48",
+    feature = "edges-56",
+    feature = "arena-edges-32",
+    feature = "arena-edges-24"
+))]
+struct EdgeFormat;
+
+/// 4 bytes in a 128 GiB window of 64-byte units, wherever the allocator
+/// put the pages.
 #[cfg(feature = "compact-edges")]
+impl EdgeFormat {
+    const BYTES: usize = 4;
+    const WINDOW_BITS: u32 = 37;
+    const PAGE_BITS: u32 = 6;
+}
+
+/// 6 bytes of the whole address in 64-byte units: x86-64's 47-bit user
+/// space, or any 48-bit one, with no window to share.
+#[cfg(feature = "edges-48")]
+impl EdgeFormat {
+    const BYTES: usize = 6;
+    const WINDOW_BITS: u32 = 64;
+    const PAGE_BITS: u32 = 6;
+}
+
+/// 7 bytes of the whole address in 64-byte units: room for 5-level
+/// paging's 56-bit user space.
+#[cfg(feature = "edges-56")]
+impl EdgeFormat {
+    const BYTES: usize = 7;
+    const WINDOW_BITS: u32 = 64;
+    const PAGE_BITS: u32 = 6;
+}
+
+/// 4 bytes within the map's page arena ([`crate::PageArena`]), in 64-byte
+/// units.
+#[cfg(feature = "arena-edges-32")]
+impl EdgeFormat {
+    const BYTES: usize = 4;
+    const WINDOW_BITS: u32 = crate::arena::PageArena::SIZE_BITS;
+    const PAGE_BITS: u32 = 6;
+}
+
+/// 3 bytes within the map's page arena ([`crate::PageArena`]), in 512-byte
+/// units: pages of the default config only.
+#[cfg(feature = "arena-edges-24")]
+impl EdgeFormat {
+    const BYTES: usize = 3;
+    const WINDOW_BITS: u32 = crate::arena::PageArena::SIZE_BITS;
+    const PAGE_BITS: u32 = 9;
+}
+
+#[cfg(any(
+    feature = "compact-edges",
+    feature = "edges-48",
+    feature = "edges-56",
+    feature = "arena-edges-32",
+    feature = "arena-edges-24"
+))]
+impl EdgeFormat {
+    /// The address bits within a window.
+    const IN_WINDOW: usize = if Self::WINDOW_BITS >= usize::BITS {
+        usize::MAX
+    } else {
+        (1 << Self::WINDOW_BITS) - 1
+    };
+
+    /// The bits an edge holds.
+    const MASK: u64 = u64::MAX >> (64 - 8 * Self::BYTES as u32);
+
+    /// The encoding of the page at `child`, tagged a leaf if `is_leaf`,
+    /// from a parent in page `parent`.
+    ///
+    /// # Panics
+    ///
+    /// If `child` is outside `parent`'s window, starts it, is not aligned
+    /// to a unit, or its page number doesn't fit.
+    #[inline(always)]
+    fn encode(child: usize, is_leaf: bool, parent: usize) -> u64 {
+        assert_eq!(
+            child & !Self::IN_WINDOW,
+            parent & !Self::IN_WINDOW,
+            "a tree's pages lie in one window (packed edges)"
+        );
+        assert_eq!(
+            child % (1 << Self::PAGE_BITS),
+            0,
+            "a page is aligned to a unit"
+        );
+        let page_number = ((child & Self::IN_WINDOW) >> Self::PAGE_BITS) as u64;
+        assert_ne!(page_number, 0, "no page starts a window (packed edges)");
+        let bits = (page_number << 1) | u64::from(is_leaf);
+        assert_eq!(bits & Self::MASK, bits, "the page number fits the edge");
+        bits
+    }
+
+    /// The tagged address `bits` encodes, from a parent in page `parent`,
+    /// or `None` for 0, a zeroed slot.
+    #[inline(always)]
+    fn decode(bits: u64, parent: usize) -> Option<usize> {
+        if bits == 0 {
+            return None;
+        }
+        let page_number = (bits >> 1) as usize;
+        let tag = (bits & 1) as usize;
+        Some((parent & !Self::IN_WINDOW) | (page_number << Self::PAGE_BITS) | tag)
+    }
+}
+
+/// What an internal node stores for each edge (experiments: packed edges):
+/// the child as [`EdgeFormat`] encodes it. Moves between nodes keep it, as
+/// every page of a tree is in one window.
+#[cfg(any(
+    feature = "compact-edges",
+    feature = "edges-48",
+    feature = "edges-56",
+    feature = "arena-edges-32",
+    feature = "arena-edges-24"
+))]
 #[repr(transparent)]
 pub(in crate::tree) struct EdgeSlot<K, V, S> {
-    page_number_and_tag: u32,
+    bytes: [u8; EdgeFormat::BYTES],
     _node: PhantomData<NodePtr<K, V, S>>,
 }
 
-#[cfg(feature = "compact-edges")]
+#[cfg(any(
+    feature = "compact-edges",
+    feature = "edges-48",
+    feature = "edges-56",
+    feature = "arena-edges-32",
+    feature = "arena-edges-24"
+))]
 impl<K, V, S> Clone for EdgeSlot<K, V, S> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-#[cfg(feature = "compact-edges")]
+#[cfg(any(
+    feature = "compact-edges",
+    feature = "edges-48",
+    feature = "edges-56",
+    feature = "arena-edges-32",
+    feature = "arena-edges-24"
+))]
 impl<K, V, S> Copy for EdgeSlot<K, V, S> {}
 
-#[cfg(feature = "compact-edges")]
+#[cfg(any(
+    feature = "compact-edges",
+    feature = "edges-48",
+    feature = "edges-56",
+    feature = "arena-edges-32",
+    feature = "arena-edges-24"
+))]
 impl<K, V, S> EdgeSlot<K, V, S> {
-    /// The window's size, as a power of two: 128 GiB, so that a page
-    /// number and the tag fill 32 bits.
-    const WINDOW_BITS: u32 = 37;
-
-    /// The page numbers' unit, as a power of two: 64 bytes, the smallest
-    /// alignment of a page in any config (D59).
-    const PAGE_BITS: u32 = 6;
-
-    /// The address bits within a window.
-    const IN_WINDOW: usize = (1 << Self::WINDOW_BITS) - 1;
-
     /// The edge to `child` from the internal node in page `parent`.
-    ///
-    /// # Panics
-    ///
-    /// If `child` is outside `parent`'s window, starts it, or is less than
-    /// 64-byte aligned.
     #[inline(always)]
     fn of(child: NodePtr<K, V, S>, parent: NonNull<u8>) -> Self {
-        let child_addr = child.page().addr().get();
-        assert_eq!(
-            child_addr & !Self::IN_WINDOW,
-            parent.addr().get() & !Self::IN_WINDOW,
-            "a tree's pages lie in one 128 GiB-aligned window (compact edges)"
+        let bits = EdgeFormat::encode(
+            child.page().addr().get(),
+            child.is_leaf(),
+            parent.addr().get(),
         );
-        assert_eq!(
-            child_addr % (1 << Self::PAGE_BITS),
-            0,
-            "a page is 64-byte aligned"
-        );
-        let page_number = (child_addr & Self::IN_WINDOW) >> Self::PAGE_BITS;
-        assert_ne!(page_number, 0, "no page starts a window (compact edges)");
-        let tag = usize::from(child.is_leaf());
+        let mut bytes = [0; EdgeFormat::BYTES];
+        bytes.copy_from_slice(&bits.to_le_bytes()[..EdgeFormat::BYTES]);
         Self {
-            page_number_and_tag: u32::try_from((page_number << 1) | tag)
-                .expect("a window holds 2^31 pages"),
+            bytes,
             _node: PhantomData,
         }
     }
@@ -390,16 +535,14 @@ impl<K, V, S> EdgeSlot<K, V, S> {
     /// `parent`, or `None` for a zeroed slot.
     #[inline(always)]
     fn child(self, parent: NonNull<u8>) -> Option<NodePtr<K, V, S>> {
-        if self.page_number_and_tag == 0 {
-            return None;
-        }
-        let page_number = (self.page_number_and_tag >> 1) as usize;
-        let tag = (self.page_number_and_tag & 1) as usize;
-        let window = parent.addr().get() & !Self::IN_WINDOW;
-        let tagged = (parent.as_ptr()).with_addr(window | (page_number << Self::PAGE_BITS) | tag);
+        let mut word = [0; 8];
+        word[..EdgeFormat::BYTES].copy_from_slice(&self.bytes);
+        let tagged = EdgeFormat::decode(u64::from_le_bytes(word), parent.addr().get())?;
         // SAFETY: a nonzero edge was made by `Self::of` from a node's tagged
         // pointer, in this window (its invariant).
-        Some(unsafe { NodePtr::from_tagged(NonNull::new_unchecked(tagged)) })
+        Some(unsafe {
+            NodePtr::from_tagged(NonNull::new_unchecked(parent.as_ptr().with_addr(tagged)))
+        })
     }
 }
 
@@ -407,11 +550,23 @@ impl<K, V, S> NodePtr<K, V, S> {
     /// The edge to this node from the internal node in page `parent`.
     #[inline(always)]
     pub(in crate::tree) fn as_edge_from(self, parent: NonNull<u8>) -> EdgeSlot<K, V, S> {
-        #[cfg(feature = "compact-edges")]
+        #[cfg(any(
+            feature = "compact-edges",
+            feature = "edges-48",
+            feature = "edges-56",
+            feature = "arena-edges-32",
+            feature = "arena-edges-24"
+        ))]
         {
             EdgeSlot::of(self, parent)
         }
-        #[cfg(not(feature = "compact-edges"))]
+        #[cfg(not(any(
+            feature = "compact-edges",
+            feature = "edges-48",
+            feature = "edges-56",
+            feature = "arena-edges-32",
+            feature = "arena-edges-24"
+        )))]
         {
             let _ = parent;
             self
@@ -426,12 +581,24 @@ impl<K, V, S> NodePtr<K, V, S> {
     /// `edge` is an initialized edge of that node.
     #[inline(always)]
     pub(in crate::tree) unsafe fn of_edge(edge: EdgeSlot<K, V, S>, parent: NonNull<u8>) -> Self {
-        #[cfg(feature = "compact-edges")]
+        #[cfg(any(
+            feature = "compact-edges",
+            feature = "edges-48",
+            feature = "edges-56",
+            feature = "arena-edges-32",
+            feature = "arena-edges-24"
+        ))]
         {
             // SAFETY: an initialized edge is nonzero (caller).
             unsafe { edge.child(parent).unwrap_unchecked() }
         }
-        #[cfg(not(feature = "compact-edges"))]
+        #[cfg(not(any(
+            feature = "compact-edges",
+            feature = "edges-48",
+            feature = "edges-56",
+            feature = "arena-edges-32",
+            feature = "arena-edges-24"
+        )))]
         {
             let _ = parent;
             edge
@@ -439,7 +606,7 @@ impl<K, V, S> NodePtr<K, V, S> {
     }
 
     /// The node the edge in `slot` of the internal node in page `parent`
-    /// leads to, read as raw bits while writers may change it, or `None`
+    /// leads to, read as raw bytes while writers may change it, or `None`
     /// for a zeroed slot (`optimistic.rs`).
     ///
     /// # Safety
@@ -451,17 +618,24 @@ impl<K, V, S> NodePtr<K, V, S> {
         slot: NonNull<EdgeSlot<K, V, S>>,
         parent: NonNull<u8>,
     ) -> Option<Self> {
-        #[cfg(feature = "compact-edges")]
+        #[cfg(any(
+            feature = "compact-edges",
+            feature = "edges-48",
+            feature = "edges-56",
+            feature = "arena-edges-32",
+            feature = "arena-edges-24"
+        ))]
         {
-            // SAFETY: forwarded; the slot is a `u32`'s size and alignment.
-            let bits = unsafe { slot.cast::<u32>().read() };
-            EdgeSlot {
-                page_number_and_tag: bits,
-                _node: PhantomData,
-            }
-            .child(parent)
+            // SAFETY: forwarded; the slot is plain bytes.
+            unsafe { slot.read() }.child(parent)
         }
-        #[cfg(not(feature = "compact-edges"))]
+        #[cfg(not(any(
+            feature = "compact-edges",
+            feature = "edges-48",
+            feature = "edges-56",
+            feature = "arena-edges-32",
+            feature = "arena-edges-24"
+        )))]
         {
             let _ = parent;
             // SAFETY: forwarded; the slot is a pointer's size and alignment.

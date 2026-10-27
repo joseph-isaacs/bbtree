@@ -10,6 +10,8 @@ extern crate alloc;
 extern crate std;
 
 mod allocator;
+#[cfg(any(feature = "arena-edges-32", feature = "arena-edges-24"))]
+mod arena;
 #[cfg(feature = "file")]
 pub mod file;
 mod inline_key;
@@ -21,6 +23,8 @@ mod tree;
 pub mod unsync;
 
 pub use allocator::{AllocError, Allocator, Global};
+#[cfg(any(feature = "arena-edges-32", feature = "arena-edges-24"))]
+pub use arena::PageArena;
 pub use inline_key::{Auto, InlineKey, InlineKeyStrategy, InlineWidth, InlineWord, WithInlineKey};
 pub use leaf_annex::{LeafAnnex, WithLeafAnnex};
 pub use map::BBTreeMap;
