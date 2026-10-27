@@ -24,6 +24,9 @@ file = []
 # Read-only views of a map's nodes (`BBTreeMap::inspect`), for the visualizer
 # in `vis/`. No stability promise.
 inspect = []
+# `unsync::BBTreeMap::get_many_queued`: batched lookups run by a sync work
+# queue instead of the async executor, for an A/B in the bench (doc 12).
+batch-work-queue = []
 
 [lints.rust]
 # Verus sets `verus_only` while it verifies: the proofs' modules, which only
